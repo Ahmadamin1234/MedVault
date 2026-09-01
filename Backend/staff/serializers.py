@@ -21,7 +21,7 @@ ROLE_PERMISSIONS = {
 
 class StaffMemberSerializer(serializers.ModelSerializer):
     lastActive = serializers.SerializerMethodField()
-    credentialsSent = serializers.BooleanField(read_only=True, default=False)
+    credentialsSent = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffMember
@@ -102,3 +102,5 @@ class StaffMemberSerializer(serializers.ModelSerializer):
 
     def get_lastActive(self, obj):
         return obj.created_at.strftime('%Y-%m-%d')
+    def get_credentialsSent(self, obj):
+        return bool(obj.user)

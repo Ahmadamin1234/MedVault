@@ -20,7 +20,6 @@ import ExpiryAlertsPage from './pages/ExpiryAlertsPage';
 import SalesBillingPage from './pages/SalesBillingPage';
 import ReportsPage from './pages/ReportsPage';
 import StaffPage from './pages/StaffPage';
-import SettingsPage from './pages/SettingsPage';
 
 export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -65,9 +64,6 @@ export default function App() {
             </Route>
             <Route element={<RoleProtectedRoute page='staff'/>}>
             <Route path="/staff" element={<StaffPage />} />
-            </Route>
-            <Route element={<RoleProtectedRoute page='settings'/>}>
-            <Route path="/settings" element={<SettingsPage />} />
             </Route>
           </Route>
         </Route>

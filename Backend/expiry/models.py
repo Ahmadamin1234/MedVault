@@ -21,8 +21,10 @@ class ExpiryResolution(models.Model):
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name='expiry_resolutions'
+        on_delete=models.SET_NULL,
+        related_name='expiry_resolutions',
+        null=True,
+        blank=True
     )
 
     action = models.CharField(

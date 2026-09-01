@@ -3,13 +3,13 @@ from decimal import Decimal
 
 from django.db.models import Count, Sum, F
 from django.utils import timezone
+
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import AnalyticsAccess
 from billing.models import Sale, SaleItem
 from inventory.models import Medication
-from orders.models import MedicationBatch
 
 
 # ============================================================
@@ -17,7 +17,8 @@ from orders.models import MedicationBatch
 # ============================================================
 
 def money(value):
-    return f'${(value or Decimal("0.00")):.2f}'
+    value = value or Decimal("0.00")
+    return f"${value:.2f}"
 
 
 # ============================================================
@@ -25,27 +26,39 @@ def money(value):
 # ============================================================
 
 def get_monthly_series(sales):
+
     today = timezone.localdate()
 
     months = []
 
     for offset in range(5, -1, -1):
 
-        # Find month start
+        # ----------------------------------------------------
+        # CURRENT MONTH START
+        # ----------------------------------------------------
+
         month_start = (
             today.replace(day=1)
             - timedelta(days=offset * 31)
         ).replace(day=1)
 
-        # Find next month
+        # ----------------------------------------------------
+        # NEXT MONTH
+        # ----------------------------------------------------
+
         if month_start.month == 12:
+
             next_month = month_start.replace(
                 year=month_start.year + 1,
-                month=1
+                month=1,
+                day=1,
             )
+
         else:
+
             next_month = month_start.replace(
-                month=month_start.month + 1
+                month=month_start.month + 1,
+                day=1,
             )
 
         # ----------------------------------------------------
@@ -54,44 +67,56 @@ def get_monthly_series(sales):
 
         month_sales = sales.filter(
             created_at__date__gte=month_start,
-            created_at__date__lt=next_month
+            created_at__date__lt=next_month,
         )
+
+        # ----------------------------------------------------
+        # REVENUE
+        # ----------------------------------------------------
 
         revenue = (
             month_sales.aggregate(
-                total=Sum('grand_total')
-            )['total']
-            or Decimal('0.00')
+                total=Sum("grand_total")
+            )["total"]
+            or Decimal("0.00")
         )
 
         # ----------------------------------------------------
         # COGS
         #
-        # SaleItemBatch contains the actual batch cost
-        # used during the sale.
+        # Actual batch cost used during sale
         # ----------------------------------------------------
 
-        month_sale_items = SaleItem.objects.filter(
-            sale__in=month_sales
-        ).prefetch_related(
-            'batch_allocations'
+        month_items = (
+            SaleItem.objects
+            .filter(
+                sale__in=month_sales
+            )
+            .prefetch_related(
+                "batch_allocations"
+            )
         )
 
-        cogs = Decimal('0.00')
+        cogs = Decimal("0.00")
 
-        for sale_item in month_sale_items:
+        for sale_item in month_items:
 
             for allocation in sale_item.batch_allocations.all():
 
                 cogs += (
-                    allocation.quantity *
-                    allocation.unit_cost
+                    allocation.quantity
+                    * allocation.unit_cost
                 )
 
         months.append({
-            'label': month_start.strftime('%b %Y'),
-            'revenue': float(revenue),
-            'cogs': float(cogs),
+
+            "label": month_start.strftime(
+                "%b %Y"
+            ),
+
+            "revenue": float(revenue),
+
+            "cogs": float(cogs),
         })
 
     return months
@@ -105,36 +130,202 @@ def get_category_sales(sales):
 
     rows = (
         SaleItem.objects
-        .filter(sale__in=sales)
-        .values('medication__category')
-        .annotate(
-            revenue=Sum('line_total')
+        .filter(
+            sale__in=sales
         )
-        .order_by('-revenue')
+        .values(
+            "medication__category"
+        )
+        .annotate(
+            revenue=Sum("line_total")
+        )
+        .order_by("-revenue")
     )
 
     total = sum(
-        row['revenue'] or Decimal('0.00')
+        row["revenue"] or Decimal("0.00")
         for row in rows
     )
 
     if total <= 0:
-        total = Decimal('1.00')
+        total = Decimal("1.00")
 
     return [
+
         {
-            'name': (
-                row['medication__category']
-                or 'Uncategorized'
+            "name": (
+                row["medication__category"]
+                or "Uncategorized"
             ),
-            'percentage': round(
-                (row['revenue'] or Decimal('0.00'))
+
+            "percentage": round(
+                (
+                    row["revenue"]
+                    or Decimal("0.00")
+                )
                 / total
                 * 100
             ),
         }
+
         for row in rows[:5]
     ]
+
+
+# ============================================================
+# CATEGORY PERFORMANCE
+#
+# Used by:
+# PerformanceGrids.jsx
+#
+# Returns:
+#
+# {
+#     category,
+#     q1,
+#     q2,
+#     sparkPath
+# }
+# ============================================================
+
+def get_category_performance(sales):
+
+    today = timezone.localdate()
+
+    year = today.year
+
+    # --------------------------------------------------------
+    # QUARTER DATE RANGES
+    # --------------------------------------------------------
+
+    q1_start = today.replace(
+        year=year,
+        month=1,
+        day=1,
+    )
+
+    q2_start = today.replace(
+        year=year,
+        month=4,
+        day=1,
+    )
+
+    q3_start = today.replace(
+        year=year,
+        month=7,
+        day=1,
+    )
+
+    # --------------------------------------------------------
+    # TOP CATEGORIES
+    #
+    # Get categories from all current-year sales.
+    # --------------------------------------------------------
+
+    category_rows = (
+        SaleItem.objects
+        .filter(
+            sale__in=sales
+        )
+        .values(
+            "medication__category"
+        )
+        .annotate(
+            revenue=Sum("line_total")
+        )
+        .order_by("-revenue")[:5]
+    )
+
+    performance = []
+
+    for row in category_rows:
+
+        category = (
+            row["medication__category"]
+            or "Uncategorized"
+        )
+
+        # ----------------------------------------------------
+        # Q1 REVENUE
+        # ----------------------------------------------------
+
+        q1_revenue = (
+            SaleItem.objects
+            .filter(
+                sale__in=sales,
+                medication__category=category,
+                sale__created_at__date__gte=q1_start,
+                sale__created_at__date__lt=q2_start,
+            )
+            .aggregate(
+                total=Sum("line_total")
+            )["total"]
+            or Decimal("0.00")
+        )
+
+        # ----------------------------------------------------
+        # Q2 REVENUE
+        # ----------------------------------------------------
+
+        q2_revenue = (
+            SaleItem.objects
+            .filter(
+                sale__in=sales,
+                medication__category=category,
+                sale__created_at__date__gte=q2_start,
+                sale__created_at__date__lt=q3_start,
+            )
+            .aggregate(
+                total=Sum("line_total")
+            )["total"]
+            or Decimal("0.00")
+        )
+
+        # ----------------------------------------------------
+        # CREATE SMALL SPARKLINE
+        #
+        # Frontend expects SVG path.
+        # ----------------------------------------------------
+
+        q1_value = float(q1_revenue)
+        q2_value = float(q2_revenue)
+
+        if q1_value == 0 and q2_value == 0:
+
+            spark_path = (
+                "M 0 10 "
+                "C 15 10, 30 10, 45 10 "
+                "S 55 10, 60 10"
+            )
+
+        elif q2_value >= q1_value:
+
+            spark_path = (
+                "M 0 15 "
+                "C 15 14, 25 10, 35 11 "
+                "S 50 6, 60 4"
+            )
+
+        else:
+
+            spark_path = (
+                "M 0 4 "
+                "C 15 5, 25 10, 35 9 "
+                "S 50 14, 60 16"
+            )
+
+        performance.append({
+
+            "category": category,
+
+            "q1": money(q1_revenue),
+
+            "q2": money(q2_revenue),
+
+            "sparkPath": spark_path,
+        })
+
+    return performance
 
 
 # ============================================================
@@ -170,8 +361,8 @@ class DashboardView(APIView):
         # ====================================================
 
         low_stock = medications.filter(
-            stock_quantity__lte=F('reorder_level'),
-            stock_quantity__gt=0
+            stock_quantity__lte=F("reorder_level"),
+            stock_quantity__gt=0,
         )
 
         # ====================================================
@@ -183,23 +374,27 @@ class DashboardView(APIView):
         )
 
         # ====================================================
-        # EXPIRING BATCHES
+        # EXPIRING MEDICATIONS
         #
-        # IMPORTANT:
-        # expiry_date belongs to MedicationBatch,
-        # NOT Medication.
+        # Expiry belongs to MedicationBatch.
         # ====================================================
 
-        expiry_limit = today + timedelta(days=90)
+        expiry_limit = (
+            today + timedelta(days=90)
+        )
 
-        expiring_medications = Medication.objects.filter(
-    batches__expiry_date__gte=today,
-    batches__expiry_date__lte=today + timedelta(days=90),
-    batches__quantity_remaining__gt=0
-).distinct()
+        expiring_medications = (
+            Medication.objects
+            .filter(
+                batches__expiry_date__gte=today,
+                batches__expiry_date__lte=expiry_limit,
+                batches__quantity_remaining__gt=0,
+            )
+            .distinct()
+        )
 
         # ====================================================
-        # TODAY SALES
+        # TODAY'S SALES
         # ====================================================
 
         today_sales = (
@@ -208,9 +403,9 @@ class DashboardView(APIView):
                 created_at__date=today
             )
             .aggregate(
-                total=Sum('grand_total')
-            )['total']
-            or Decimal('0.00')
+                total=Sum("grand_total")
+            )["total"]
+            or Decimal("0.00")
         )
 
         # ====================================================
@@ -219,15 +414,15 @@ class DashboardView(APIView):
 
         categories = (
             medications
-            .values('category')
+            .values("category")
             .annotate(
-                total=Count('id')
+                total=Count("id")
             )
-            .order_by('-total')
+            .order_by("-total")
         )
 
         category_total = sum(
-            item['total']
+            item["total"]
             for item in categories
         )
 
@@ -241,7 +436,7 @@ class DashboardView(APIView):
         recent_sales = (
             sales
             .prefetch_related(
-                'items__medication'
+                "items__medication"
             )[:5]
         )
 
@@ -252,31 +447,32 @@ class DashboardView(APIView):
             item = sale.items.first()
 
             billing.append({
-                'id': sale.id,
 
-                'name': (
+                "id": sale.id,
+
+                "name": (
                     item.medication.name
                     if item
-                    else 'Sale'
+                    else "Sale"
                 ),
 
-                'qty': (
-                    f'{item.quantity} Units'
+                "qty": (
+                    f"{item.quantity} Units"
                     if item
-                    else '0 Units'
+                    else "0 Units"
                 ),
 
-                'user': (
+                "user": (
                     sale.customer_name
-                    or 'Walk-in Customer'
+                    or "Walk-in Customer"
                 ),
 
-                'price': money(
+                "price": money(
                     sale.grand_total
                 ),
 
-                'time': sale.created_at.strftime(
-                    '%I:%M %p'
+                "time": sale.created_at.strftime(
+                    "%I:%M %p"
                 ),
             })
 
@@ -296,112 +492,116 @@ class DashboardView(APIView):
             percentage = min(
                 100,
                 round(
-                    item.stock_quantity /
-                    reorder_level *
-                    100
+                    item.stock_quantity
+                    / reorder_level
+                    * 100
                 )
             )
 
             low_stock_rows.append({
 
-                'id': item.id,
+                "id": item.id,
 
-                'name': item.name,
+                "name": item.name,
 
-                'info': (
-                    f'Stock: {item.stock_quantity} / '
-                    f'Min Reorder: {item.reorder_level}'
+                "info": (
+                    f"Stock: {item.stock_quantity} / "
+                    f"Min Reorder: {item.reorder_level}"
                 ),
 
-                'pct': f'{percentage}%',
+                "pct": f"{percentage}%",
 
-                'color': (
-                    'bg-amber-400 '
-                    'text-amber-700 '
-                    'bg-amber-50'
+                "color": (
+                    "bg-amber-400 "
+                    "text-amber-700 "
+                    "bg-amber-50"
                 ),
             })
 
         # ====================================================
-        # RETURN DASHBOARD
+        # RESPONSE
         # ====================================================
 
         return Response({
 
             # =================================================
-            # DASHBOARD STAT CARDS
+            # STAT CARDS
             # =================================================
 
-            'stats': [
+            "stats": [
 
                 {
-                    'title': 'Total Drugs In Catalog',
+                    "title": "Total Drugs In Catalog",
 
-                    'value': medications.count(),
+                    "value": medications.count(),
 
-                    'subtext': 'Live database count',
+                    "subtext": "Live database count",
 
-                    'color': 'text-emerald-600',
+                    "color": "text-emerald-600",
 
-                    'bg': 'bg-emerald-50',
+                    "bg": "bg-emerald-50",
 
-                    'icon': 'Package',
+                    "icon": "Package",
 
-                    'badgeColor': 'text-emerald-500',
+                    "badgeColor": "text-emerald-500",
                 },
 
                 {
-                    'title': 'Low Stock Alerts',
+                    "title": "Low Stock Alerts",
 
-                    'value': low_stock.count(),
+                    "value": low_stock.count(),
 
-                    'subtext': (
-                        'Items below reorder level'
+                    "subtext": (
+                        "Items below reorder level"
                     ),
 
-                    'color': 'text-amber-600',
+                    "color": "text-amber-600",
 
-                    'bg': 'bg-amber-50',
+                    "bg": "bg-amber-50",
 
-                    'icon': 'AlertTriangle',
+                    "icon": "AlertTriangle",
 
-                    'badgeColor': 'text-amber-500',
+                    "badgeColor": "text-amber-500",
                 },
 
                 {
-                    'title': 'Expiring Soon',
+                    "title": "Expiring Soon",
 
-                    'value': expiring_medications.count(),
-
-                    'subtext': (
-                        'Within the next 90 days'
+                    "value": (
+                        expiring_medications.count()
                     ),
 
-                    'color': 'text-rose-600',
+                    "subtext": (
+                        "Within the next 90 days"
+                    ),
 
-                    'bg': 'bg-rose-50',
+                    "color": "text-rose-600",
 
-                    'icon': 'Clock',
+                    "bg": "bg-rose-50",
 
-                    'badgeColor': 'text-rose-400',
+                    "icon": "Clock",
+
+                    "badgeColor": "text-rose-400",
                 },
 
                 {
-                    'title': "Today's Sales",
+                    "title": "Today's Sales",
 
-                    'value': money(today_sales),
-
-                    'subtext': (
-                        'Completed sales today'
+                    "value": money(
+                        today_sales
                     ),
 
-                    'color': 'text-blue-600',
+                    "subtext": (
+                        "Completed sales today"
+                    ),
 
-                    'bg': 'bg-blue-50',
+                    "color": "text-blue-600",
 
-                    'icon': 'DollarSign',
+                    "bg": "bg-blue-50",
 
-                    'badgeColor': 'text-emerald-500',
+                    "icon": "DollarSign",
+
+                    "badgeColor": "text-emerald-500",
                 },
             ],
 
@@ -409,43 +609,51 @@ class DashboardView(APIView):
             # INVENTORY CATEGORY DISTRIBUTION
             # =================================================
 
-          'categories': [
-    {
-        'name': item['category'] or 'Uncategorized',
+            "categories": [
 
-        'percentage': (
-            f"{round(item['total'] / category_total * 100)}%"
-        ),
+                {
+                    "name": (
+                        item["category"]
+                        or "Uncategorized"
+                    ),
 
-        'color': 'bg-teal-600',
-    }
+                    "percentage": (
+                        f"{round(
+                            item['total']
+                            / category_total
+                            * 100
+                        )}%"
+                    ),
 
-    for item in categories[:5]
-],
+                    "color": "bg-teal-600",
+                }
+
+                for item in categories[:5]
+            ],
 
             # =================================================
             # RECENT BILLING
             # =================================================
 
-            'billing': billing,
+            "billing": billing,
 
             # =================================================
             # LOW STOCK
             # =================================================
 
-            'lowStock': low_stock_rows,
+            "lowStock": low_stock_rows,
 
             # =================================================
             # OUT OF STOCK
             # =================================================
 
-            'outOfStock': out_of_stock.count(),
+            "outOfStock": out_of_stock.count(),
 
             # =================================================
             # REVENUE TREND
             # =================================================
 
-            'revenueTrend': get_monthly_series(
+            "revenueTrend": get_monthly_series(
                 sales
             ),
 
@@ -453,7 +661,7 @@ class DashboardView(APIView):
             # SALES BY CATEGORY
             # =================================================
 
-            'salesByCategory': get_category_sales(
+            "salesByCategory": get_category_sales(
                 sales
             ),
         })
@@ -482,7 +690,7 @@ class ReportsView(APIView):
         )
 
         # ====================================================
-        # ONLY ITEMS FROM CURRENT YEAR SALES
+        # CURRENT YEAR SALE ITEMS
         # ====================================================
 
         items = (
@@ -491,26 +699,26 @@ class ReportsView(APIView):
                 sale__in=sales
             )
             .prefetch_related(
-                'batch_allocations'
+                "batch_allocations"
             )
         )
 
         # ====================================================
-        # REVENUE
+        # TOTAL REVENUE
         # ====================================================
 
         revenue = (
             sales.aggregate(
-                total=Sum('grand_total')
-            )['total']
-            or Decimal('0.00')
+                total=Sum("grand_total")
+            )["total"]
+            or Decimal("0.00")
         )
 
         # ====================================================
-        # COST OF GOODS
+        # TOTAL COGS
         # ====================================================
 
-        cost = Decimal('0.00')
+        cost = Decimal("0.00")
 
         for item in items:
 
@@ -519,8 +727,8 @@ class ReportsView(APIView):
             ):
 
                 cost += (
-                    allocation.quantity *
-                    allocation.unit_cost
+                    allocation.quantity
+                    * allocation.unit_cost
                 )
 
         # ====================================================
@@ -529,8 +737,8 @@ class ReportsView(APIView):
 
         units = (
             items.aggregate(
-                total=Sum('quantity')
-            )['total']
+                total=Sum("quantity")
+            )["total"]
             or 0
         )
 
@@ -541,55 +749,19 @@ class ReportsView(APIView):
         top = (
             items
             .values(
-                'medication__name'
+                "medication__name"
             )
             .annotate(
-                units=Sum('quantity')
+                units=Sum("quantity")
             )
-            .order_by('-units')[:5]
+            .order_by("-units")[:5]
         )
 
         max_units = (
-            top[0]['units']
+            top[0]["units"]
             if top
             else 1
         )
-
-        # ====================================================
-        # PAYMENT PERFORMANCE
-        # ====================================================
-
-        payment_performance = (
-            sales
-            .values('payment_method')
-            .annotate(
-                count=Count('id'),
-                total_revenue=Sum(
-                    'grand_total'
-                )
-            )
-            .order_by('-total_revenue')
-        )
-
-        performance_data = [
-
-            {
-                'metric': (
-                    row['payment_method']
-                    or 'Unspecified'
-                ),
-
-                'volume': (
-                    f"{row['count']} transactions"
-                ),
-
-                'value': money(
-                    row['total_revenue']
-                ),
-            }
-
-            for row in payment_performance
-        ]
 
         # ====================================================
         # PROFIT MARGIN
@@ -605,7 +777,7 @@ class ReportsView(APIView):
 
         else:
 
-            profit_margin = Decimal('0.00')
+            profit_margin = Decimal("0.00")
 
         # ====================================================
         # AVERAGE ORDER VALUE
@@ -616,105 +788,171 @@ class ReportsView(APIView):
         if sale_count > 0:
 
             average_order_value = (
-                revenue /
-                sale_count
+                revenue / sale_count
             )
 
         else:
 
-            average_order_value = (
-                Decimal('0.00')
+            average_order_value = Decimal(
+                "0.00"
             )
 
+        # ====================================================
+        # CATEGORY PERFORMANCE
+        #
+        # IMPORTANT:
+        # This now matches PerformanceGrids.jsx
+        # ====================================================
+
+      # ====================================================
+# PAYMENT PERFORMANCE
+# ====================================================
+
+        payment_performance = (
+        sales
+    .values("payment_method")
+    .annotate(
+        transactions=Count("id"),
+        revenue=Sum("grand_total")
+    )
+    .order_by("-revenue")
+)
+
+        performance_data = [
+
+    {
+        "method": (
+            row["payment_method"]
+            or "Unspecified"
+        ),
+
+        "transactions": row["transactions"],
+
+        "revenue": money(
+            row["revenue"]
+        ),
+    }
+
+            for row in payment_performance
+]
         # ====================================================
         # RESPONSE
         # ====================================================
 
         return Response({
 
-            'summary': [
+            # =================================================
+            # SUMMARY CARDS
+            # =================================================
+
+            "summary": [
 
                 {
-                    'title': 'Net Revenue YTD',
+                    "title": "Net Revenue YTD",
 
-                    'value': money(
+                    "value": money(
                         revenue
                     ),
 
-                    'change': (
-                        f'{sale_count} '
-                        'completed sales'
+                    "change": (
+                        f"{sale_count} "
+                        "completed sales"
                     ),
 
-                    'isPositive': True,
+                    "isPositive": True,
                 },
 
                 {
-                    'title': 'Gross Profit Margin',
+                    "title": "Gross Profit Margin",
 
-                    'value': (
-                        f'{profit_margin:.1f}%'
+                    "value": (
+                        f"{profit_margin:.1f}%"
                     ),
 
-                    'change': (
-                        f'Cost of goods '
-                        f'{money(cost)}'
+                    "change": (
+                        f"Cost of goods "
+                        f"{money(cost)}"
                     ),
 
-                    'isPositive': (
+                    "isPositive": (
                         revenue >= cost
                     ),
                 },
 
                 {
-                    'title': 'Units Dispensed YTD',
+                    "title": "Units Dispensed YTD",
 
-                    'value': f'{units:,}',
+                    "value": f"{units:,}",
 
-                    'change': (
-                        'From completed sales'
+                    "change": (
+                        "From completed sales"
                     ),
 
-                    'isPositive': True,
+                    "isPositive": True,
 
-                    'isTarget': True,
+                    "isTarget": True,
                 },
 
                 {
-                    'title': 'Avg Order Value (AOV)',
+                    "title": "Avg Order Value (AOV)",
 
-                    'value': money(
+                    "value": money(
                         average_order_value
                     ),
 
-                    'change': (
-                        'Across completed sales'
+                    "change": (
+                        "Across completed sales"
                     ),
 
-                    'isPositive': True,
+                    "isPositive": True,
                 },
             ],
 
-           'topSelling': [
-    {
-        'name': item['medication__name'],
+            # =================================================
+            # TOP SELLING
+            # =================================================
 
-        'units': item['units'],
+            "topSelling": [
 
-        'percentage': (
-            f"{round(item['units'] / max_units * 100)}%"
-        ),
-    }
+                {
+                    "name": (
+                        item["medication__name"]
+                        or "Unknown"
+                    ),
 
-    for item in top
-],
-            'performance': performance_data,
+                    "units": item["units"],
 
-            'revenueTrend': get_monthly_series(
+                    "percentage": (
+                        f"{round(
+                            item["units"]
+                            / max_units
+                            * 100
+                        )}%"
+                    ),
+                }
+
+                for item in top
+            ],
+
+            # =================================================
+            # CATEGORY PERFORMANCE
+            # =================================================
+
+            "performance": performance_data,
+
+            # =================================================
+            # REVENUE TREND
+            # =================================================
+
+            "revenueTrend": get_monthly_series(
                 sales
             ),
 
-            'salesByCategory': get_category_sales(
+            # =================================================
+            # SALES BY CATEGORY
+            # =================================================
+
+            "salesByCategory": get_category_sales(
                 sales
             ),
         })

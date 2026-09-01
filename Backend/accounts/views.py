@@ -19,7 +19,7 @@ COOKIE_SETTINGS = {
     'samesite': 'Lax',
 }
 def set_auth_cookies(response, access, refresh):
-    response.set_cookie('access_token', access, max_age=300, **COOKIE_SETTINGS)
+    response.set_cookie('access_token', access, max_age=900, **COOKIE_SETTINGS)
     response.set_cookie('refresh_token', refresh, max_age=604800, **COOKIE_SETTINGS)
     return response
 
