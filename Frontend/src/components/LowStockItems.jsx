@@ -4,7 +4,7 @@ export default function LowStockItems({
   stockData = [],
 }) {
   return (
-    <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm h-full">
+    <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
 
       {/* HEADER */}
       <div className="flex justify-between items-center mb-4">

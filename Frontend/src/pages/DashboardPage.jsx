@@ -74,7 +74,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="flex-1 overflow-y-auto p-8 space-y-6 bg-slate-50">
+    <main className="h-full min-h-0 overflow-y-auto p-8 space-y-6 bg-slate-50">
 
       {/* STAT CARDS */}
       <StatCards
@@ -99,7 +99,7 @@ export default function DashboardPage() {
       </div>
 
       {/* BILLING + LOW STOCK */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
 
         <div className="lg:col-span-2">
           <RecentBilling

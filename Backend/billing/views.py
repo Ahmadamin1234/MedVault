@@ -26,5 +26,5 @@ class SaleListCreateView(
                 'items__batch_allocations',
                 'items__batch_allocations__batch',
             )
-            [:5]
+            .order_by('-created_at')
         )
